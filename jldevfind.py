@@ -2,8 +2,17 @@ from scsiio import SCSIDev
 from scsiio.common import SCSIException
 import sys, os, time
 import subprocess, re
+import serial.tools.list_ports
 
-def find_jl_devices(venfilter=None):
+def find_serial_ports():
+    devs = []
+
+    for port in serial.tools.list_ports.comports():
+        devs.append({'type': 'uart', 'path': port.device, 'name': '%s at %s' % (port.description, port.device)})
+    
+    return devs
+
+def find_scsi_devices(venfilter=None):
     devpaths = []
 
     if sys.platform == 'linux':
@@ -36,7 +45,7 @@ def find_jl_devices(venfilter=None):
 
         # stolen from UF2 utility thing
         # yet it doesn't really work now
-        '''
+        r'''
         #res = subprocess.check_output(['wmic', 'DISKDRIVE', 'get', 'DeviceID,InterfaceType']).decode('ascii')
         res = subprocess.check_output(['wmic', 'DISKDRIVE', 'get', 'DeviceID,InterfaceType']).decode('ascii')
         print(res)
@@ -70,7 +79,7 @@ def find_jl_devices(venfilter=None):
 
                 # TODO: filter based on the 'vendor', not on 'product', we don't want any wrong false-positive
                 if product.startswith(('UBOOT', 'UDISK', 'DEVICE')):
-                    devs.append({'path': path, 'name': '%s %s (%s) at %s' % (vendor, product, revision, path)})
+                    devs.append({'type': 'usb', 'path': path, 'name': '%s %s (%s) at %s' % (vendor, product, revision, path)})
 
         except SCSIException:
             pass
@@ -79,6 +88,9 @@ def find_jl_devices(venfilter=None):
             pass
 
     return devs
+
+def find_jl_devices(venfilter=None):
+    return find_scsi_devices(venfilter) + find_serial_ports()
 
 def choose_jl_device(venfilter=None, wait=True):
     att = 0
@@ -119,7 +131,7 @@ def choose_jl_device(venfilter=None, wait=True):
         print('Found %d devices, please choose the one you want to use right now, or quit (q)' % len(devs))
 
         for i, dev in enumerate(devs):
-            print('%3d: %s' % (i, dev['name']))
+            print('%3d: [%s] %s' % (i, dev['type'], dev['name']))
 
         print()
 
@@ -151,7 +163,7 @@ if __name__ == '__main__':
         print('Found %d device(s)' % len(devs))
 
         for i, dev in enumerate(devs):
-            print('%3d: %s' % (i, dev['name']))
+            print('%3d: [%s] %s' % (i, dev['type'], dev['name']))
 
     else:
         print('No devices found.')
