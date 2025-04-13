@@ -3,7 +3,7 @@ from jltech.uboot import JL_MSCDevice, SerialDevice, JL_UBOOT, JL_LoaderV2, \
     JL_LoaderV1, JL_UARTBOOT, JL_UARTLoader
 from jltech.cipher import cipher_bytes, jl_crc_cipher, jl_rxgp_cipher
 from jltech.utils import *
-from jltech.isdconfig import create_full_binary_ini
+from jltech.isdconfig import create_binary_from_ini, create_full_binary_ini, get_setting
 
 from scsiio import SCSIDev
 
@@ -40,6 +40,10 @@ ap.add_argument('--loader-arg', type=anyint, metavar='ARG',
 
 ap.add_argument('--baud', type=int, metavar='VAL', default=100,
                 help='(UART-only) UART baud rate multipler; baud rate is value times 10000; default is %(default)d')
+
+ap.add_argument('--isd-config', help='(UART-only) Path to text-formatted isd_config.ini to pass to loader')
+
+ap.add_argument('--ex-flash', help='(UART-only) Provide EX_FLASH setting. Overrides setting in isd_config.ini if specified')
 
 ap.add_argument('cmds', nargs='*',
                 help='Commands to run (as if they were typed into an interactive shell).'
@@ -650,6 +654,8 @@ dev_type_strs = {
     0x17: 'SPI NAND flash on SPI1',
 }
 
+ex_flash_setting = None
+
 if args.chip is not None:
     filter = get_chip_name(args.chip)
     if filter is None:
@@ -786,8 +792,26 @@ with devicetype(devinfo) as dev:
         with open(dataroot / spec['file'], 'rb') as f:
             loader_blob = f.read()
 
-        # TODO: load actual isd_config.ini
-        loader_blob += create_full_binary_ini()
+        # Load up isd_config.ini if provided
+        if args.isd_config is not None:
+            ini_blob = create_binary_from_ini(args.isd_config)
+            ex_flash_setting = get_setting(args.isd_config, 'SYS_CFG_PARAM', 'EX_FLASH')
+        else:
+            ini_blob = b'\x00'
+
+        binary_ini = create_full_binary_ini(ini_blob=ini_blob)
+        if len(binary_ini) > 0x400:
+            raise ValueError('Binary INI too big')
+
+        # Loader expects blob to be encrypted, but ROM decrypts entire payload
+        # including blob if flag set, so they effectively cancel each other out.
+        # Only encrypt if loader itself is not encrypted.
+        if (spl_opt & 0x02) == 0:
+            binary_ini = cipher_bytes(jl_crc_cipher, binary_ini)
+        loader_blob += binary_ini
+
+        if args.ex_flash is not None:
+            ex_flash_setting = args.ex_flash
 
         # Send UART key
         dev.send_uart_key()
@@ -819,7 +843,7 @@ with devicetype(devinfo) as dev:
         print('  ** failed to get the chip key **')
 
     try:
-        ondev = loader.online_device()
+        ondev = loader.online_device(ex_flash_setting)
         print('  - Online device:')
         print('     ID: 0x%06x' % ondev['id'])
         print('     Type: 0x%02x (%s)' % (ondev['type'], dev_type_strs.get(ondev['type'], 'unknown')))

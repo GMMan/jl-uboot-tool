@@ -259,7 +259,7 @@ class JL_LoaderV1(JL_MSCProtocolBase):
         resp = self.cmd_exec(JL_LoaderV1.Cmd.FLASH_ID, b'')
         return int.from_bytes(resp[:3], 'big')
 
-    def online_device(self):
+    def online_device(self, _):
         """ Get online device (unlike V2 protocol it only returns the device type) """
         resp = self.cmd_exec(JL_LoaderV1.Cmd.GET_ONLINE_DEVICE, b'')
         return resp[0]
@@ -431,7 +431,7 @@ class JL_LoaderV2(JL_MSCProtocolBase):
         resp = self.cmd_exec(JL_LoaderV2.Cmd.READ_KEY, arg.to_bytes(4, 'big'))
         return int.from_bytes(cipher_bytes(jl_crc_cipher, resp[4:6][::-1]), 'little')
 
-    def online_device(self):
+    def online_device(self, _):
         """ Get online device """
         resp = self.cmd_exec(JL_LoaderV2.Cmd.GET_ONLINE_DEVICE, b'')
         return {'type': resp[0], 'id': int.from_bytes(resp[2:6], 'little')}
@@ -698,10 +698,10 @@ class JL_UARTLoader(JL_UARTDevice):
         resp = self.read_response(self.Cmd.INITIALIZE_FLASH)
         return struct.unpack('>HI', resp[0:6])
 
-    def online_device(self):
+    def online_device(self, flash_param):
         """ Get online device """
         # Shim for shell
-        dev_type, dev_id = self.initialize_flash()
+        dev_type, dev_id = self.initialize_flash(flash_param)
         return {'type': dev_type, 'id': dev_id}
 
     def chip_reset(self):
