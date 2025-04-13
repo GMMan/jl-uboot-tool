@@ -1,7 +1,8 @@
 from scsiio.common import SCSIException
-from jltech.uboot import JL_MSCDevice, JL_UBOOT, JL_LoaderV2, JL_LoaderV1
+from jltech.uboot import JL_MSCDevice, SerialDevice, JL_UBOOT, JL_LoaderV2, JL_LoaderV1, JL_UARTBOOT
 from jltech.cipher import cipher_bytes, jl_crc_cipher, jl_rxgp_cipher
 from jltech.utils import *
+from jltech.isdconfig import create_full_binary_ini
 
 from scsiio import SCSIDev
 
@@ -18,20 +19,26 @@ ap = argparse.ArgumentParser(description='JieLi UBOOT tool - a tool to interact 
 
 ap.add_argument('--device', help='Path to a JieLi "UBOOT/DEVICE/UDISK" disk device, e.g. "/dev/sg2" or "\\\\.\\E:"')
 
+ap.add_argument('--type', default='usb', choices=['usb', 'uart'],
+                help='Interface type; default is %(default)s')
+
 ap.add_argument('--chip', help='Narrow down the search/match to a specific chip family e.g. "BR17" or series name e.g. "ac690n"')
 
 ap.add_argument('--arg-target', type=int, metavar='VAL', default=1, choices=range(16),
-                help='Target memory type [0:SDRAM, 1/4: SPI NOR, 2/5: SPI NAND, 7: OTP]; default is %(default)d')
+                help='(USB-only) Target memory type [0: SDRAM, 1/4: SPI NOR, 2/5: SPI NAND, 7: OTP]; default is %(default)d')
 
 ap.add_argument('--arg-clkdiv', type=int, metavar='VAL', default=0, choices=range(256),
-                help='Clock divider [0: default, 1..255 = div 1..255]; default is %(default)d')
+                help='(USB-only) Clock divider [0: default, 1..255 = div 1..255]; default is %(default)d')
 
 ap.add_argument('--arg-spimode', type=int, metavar='VAL', default=0, choices=range(4),
-                help='SPI mode [0: "3-wire" half-duplex, 1: "4-wire" full-duplex, 2: DSPI, 3: QSPI]; default is %(default)d')
+                help='(USB-only) SPI mode [0: "3-wire" half-duplex, 1: "4-wire" full-duplex, 2: DSPI, 3: QSPI]; default is %(default)d')
 
 ap.add_argument('--loader-arg', type=anyint, metavar='ARG',
-                help="Loader's argument (overrides one set with the '--arg-xxx' arguments above)."
+                help="(USB-only) Loader's argument (overrides one set with the '--arg-xxx' arguments above)."
                      " '--arg-target' defines bits 0-3, '--arg-clkdiv' defines bits 4-11 and '--arg-spimode' defines bits 12-13.")
+
+ap.add_argument('--baud', type=int, metavar='VA:', default=100,
+                help='(UART-only) UART baud rate multipler; baud rate is value times 10000; default is %(default)d')
 
 ap.add_argument('cmds', nargs='*',
                 help='Commands to run (as if they were typed into an interactive shell).'
@@ -624,108 +631,158 @@ dev_type_strs = {
     0x17: 'SPI NAND flash on SPI1',
 }
 
+if args.chip is not None:
+    filter = get_chip_name(args.chip)
+    if filter is None:
+        print(f'Unknown chip "{args.chip}"')
+        exit(1)
+else:
+    filter = None
 
 if args.device is not None:
     # use the provided device path
-    devpath = args.device
-
+    devinfo = {'type': args.type, 'path': args.device, 'name': None}
 else:
     # find and ask about the device to use
     from jldevfind import choose_jl_device
 
-    if args.chip is not None:
-        filter = get_chip_name(args.chip)
-        if filter is None:
-            print(f'Unknown chip "{args.chip}"')
-            exit(1)
-    else:
-        filter = None
-
-    devpath = choose_jl_device(venfilter=filter)
-    if devpath is None:
+    devinfo = choose_jl_device(venfilter=filter)
+    if devinfo is None:
         exit(1)
 
+# Basic sanity check before we get into it
+if devinfo['type'] == 'usb':
+    devicetype = JL_MSCDevice
+elif devinfo['type'] == 'uart':
+    if filter is None:
+        print('Chip name must be specified for UART interface.')
+        exit(1)
+    devicetype = SerialDevice
+else:
+    print('Unsupported interface type')
+    exit(2)
+
+with devicetype(devinfo) as dev:
+    if devinfo['type'] == 'usb':
+        vendor, product, prodrev = dev.inquiry()
+
+        chipname = vendor.lower()
+        if chipname not in JL_chips:
+            print(f'"{chipname}" is not supported or it is not a JieLi chip.')
+            exit(2)
+
+        print()
+
+        chipspec = JL_chips[chipname]
+        print(f'Chip: {chipname.upper()} - {"/".join(chipspec["name"])} series')
+
+        #---------------------------
+
+        loader = JL_UBOOT(dev.dev)
+
+        runtheloader = False
+
+        if product == 'UBOOT1.00':
+            runtheloader = True
+
+        if runtheloader:
+            if chipname not in JL_usb_loaders:
+                print(f'No loader available for "{chipname}".')
+                exit(3)
+
+            spec = JL_usb_loaders[chipname]
+
+            menglicrypt = False
+
+            with open(dataroot / spec['file'], 'rb') as f:
+                block_size = spec.get('blocksize', 512)
+                cipher = spec.get('encryption', 'none')
+
+                # does this chip's UBOOT1.00 accept data in mengli encrypted form?
+                if 'uboot1.00' in chipspec:
+                    if 'quirks' in chipspec['uboot1.00']:
+                        menglicrypt = chipspec['uboot1.00']['quirks'].get('memory-rw-mengli-crypt') == True
+
+                # shall we ever perform the mengli de/encryption?
+                menglicrypt = (not menglicrypt and cipher == 'MengLi') or (menglicrypt and cipher != 'MengLi')
+
+                # upload the loader
+                address = spec['address']
+
+                while True:
+                    block = f.read(block_size)
+                    if block == b'': break
+
+                    if cipher == 'RxGp':
+                        # just pass it into the dedicated memory write command
+                        loader.mem_write_rxgp(address, block)
+
+                    else:
+                        if menglicrypt:
+                            # scramble with crc_cipher
+                            block = cipher_bytes(jl_crc_cipher, block)
+
+                        loader.mem_write(address, block)
+
+                    address += len(block)
 
 
-with JL_MSCDevice(devpath) as dev:
-    vendor, product, prodrev = dev.inquiry()
+            if args.loader_arg is not None:
+                spec['argument'] = args.loader_arg
+            else:
+                spec['argument'] = (args.arg_spimode << 12) | (args.arg_clkdiv << 4) | args.arg_target
 
-    chipname = vendor.lower()
-    if chipname not in JL_chips:
-        print(f'"{chipname}" is not supported or it is not a JieLi chip.')
-        exit(2)
+            print(f'Running loader with argument 0x{spec["argument"]:04X}.')
 
-    print()
+            try:
+                loader.mem_jump(spec['address'], spec['argument'])
+                print('The Loader has been successfully installed.')
+            except SCSIException:
+                print("!! Failed to run the loader !!")
+                exit(3)
 
-    chipspec = JL_chips[chipname]
-    print(f'Chip: {chipname.upper()} - {"/".join(chipspec["name"])} series')
+        loader = JL_LoaderV2(dev.dev)
+    elif devinfo['type'] == 'uart':
+        chipname = filter
+        chipspec = JL_chips[chipname]
+        print()
+        print(f'Chip: {chipname.upper()} - {"/".join(chipspec["name"])} series')
 
-    #---------------------------
+        #---------------------------
 
-    loader = JL_UBOOT(dev.dev)
-
-    runtheloader = False
-
-    if product == 'UBOOT1.00':
-        runtheloader = True
-
-    if runtheloader:
-        if chipname not in JL_usb_loaders:
+        # Find the loader
+        if chipname not in JL_uart_loaders:
             print(f'No loader available for "{chipname}".')
             exit(3)
 
-        spec = JL_usb_loaders[chipname]
-
-        menglicrypt = False
-
+        spec = JL_uart_loaders[chipname]
+        address = spec['address']
+        spl_opt = spec.get('options', 0)  # Does not include encryption flag!
+        cipher = spec.get('encryption', 'none')
+        
+        if cipher == 'MengLi':
+            spl_opt |= 0x02
+        
+        # Prepare payload
         with open(dataroot / spec['file'], 'rb') as f:
-            block_size = spec.get('blocksize', 512)
-            cipher = spec.get('encryption', 'none')
+            loader_blob = f.read()
+        
+        # TODO: load actual isd_config.ini
+        loader_blob += create_full_binary_ini()
 
-            # does this chip's UBOOT1.00 accept data in mengli encrypted form?
-            if 'uboot1.00' in chipspec:
-                if 'quirks' in chipspec['uboot1.00']:
-                    menglicrypt = chipspec['uboot1.00']['quirks'].get('memory-rw-mengli-crypt') == True
+        # Send UART key
+        dev.send_uart_key()
 
-            # shall we ever perform the mengli de/encryption?
-            menglicrypt = (not menglicrypt and cipher == 'MengLi') or (menglicrypt and cipher != 'MengLi')
-
-            # upload the loader
-            address = spec['address']
-
-            while True:
-                block = f.read(block_size)
-                if block == b'': break
-
-                if cipher == 'RxGp':
-                    # just pass it into the dedicated memory write command
-                    loader.mem_write_rxgp(address, block)
-
-                else:
-                    if menglicrypt:
-                        # scramble with crc_cipher
-                        block = cipher_bytes(jl_crc_cipher, block)
-
-                    loader.mem_write(address, block)
-
-                address += len(block)
-
-
-        if args.loader_arg is not None:
-            spec['argument'] = args.loader_arg
-        else:
-            spec['argument'] = (args.arg_spimode << 12) | (args.arg_clkdiv << 4) | args.arg_target
-
-        print(f'Running loader with argument 0x{spec["argument"]:04X}.')
-
-        try:
-            loader.mem_jump(spec['address'], spec['argument'])
+        # Send payload
+        loader = JL_UARTBOOT(dev.dev, is_jl_tool=dev.is_download_tool, single_wire=dev.is_download_tool)
+        if loader.send_loader(loader_blob, address, spl_opt, args.baud):
             print('The Loader has been successfully installed.')
-        except SCSIException:
+        else:
             print("!! Failed to run the loader !!")
             exit(3)
 
-    loader = JL_LoaderV2(dev.dev)
+        # Replace loader with second stage
+        exit(0)  # TODO
 
     #
     # Print some quick info summary

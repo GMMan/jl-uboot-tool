@@ -4,11 +4,13 @@ sh54:
     file: loaderblobs/uart/sh54loader.uart
     address: 0xb00
     encryption: MengLi
+    options: 0x08
 
 sh55:
     file: loaderblobs/uart/sh55loader.uart
     address: 0x000
     encryption: MengLi
+    options: 0x08
 
 uc03:
     file: loaderblobs/uart/uc03loader.uart

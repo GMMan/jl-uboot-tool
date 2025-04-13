@@ -2,3 +2,4 @@ crcmod
 pyyaml
 pycryptodomex
 tqdm
+pyserial ~= 3.5

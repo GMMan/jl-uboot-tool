@@ -125,7 +125,7 @@ def choose_jl_device(venfilter=None, wait=True):
 
     elif len(devs) == 1:
         print('Found a device: %s' % devs[0]['name'])
-        return devs[0]['path']
+        return devs[0]
 
     else:
         print('Found %d devices, please choose the one you want to use right now, or quit (q)' % len(devs))
@@ -150,7 +150,7 @@ def choose_jl_device(venfilter=None, wait=True):
                 continue
 
             try:
-                return devs[num]['path']
+                return devs[num]
             except IndexError:
                 print('Please enter a number in range 0..%d!' % (len(devs) - 1))
 

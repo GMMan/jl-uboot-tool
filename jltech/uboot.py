@@ -1,14 +1,16 @@
 from scsiio import SCSIDev
 from scsiio.common import SCSIException
-from jltech.crc import jl_crc16
+from jltech.crc import jl_crc8, jl_crc16
 from jltech.cipher import jl_crc_cipher, cipher_bytes
 import os, time
+from serial import Serial
+import struct
 
 class JL_MSCDevice:
     """ Class for handling of the JieLi Mass Storage devices """
 
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, info):
+        self.path = info['path']
         self.open()
 
     def __enter__(self):
@@ -86,6 +88,44 @@ class JL_MSCDevice:
             str(data[16:32], 'ascii').strip(),
             str(data[32:36], 'ascii').strip()
         )
+
+class SerialDevice:
+    """Class for handling serial ports"""
+
+    def __init__(self, info):
+        self.path = info['path']
+        self.is_download_tool = info['name'] and ('JLVirtualJtagSerial' in info['name']) # maybe Windows-only for now
+        self.open()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, *args, **kwargs):
+        self.close()
+
+    #-------------------------------------------#
+
+    def open(self):
+        # baud is sane default that won't cause USB download tool to issue UART key
+        self.dev = Serial(self.path, 115200, timeout=1.0)
+        
+    def close(self):
+        self.dev.close()
+
+    #-------------------------------------------#
+
+    def send_uart_key(self):
+        if self.is_download_tool:
+            # Switch to 1-wire mode with power cycle enabled
+            self.dev.baudrate = 3
+            # Power cycle and send UART key, then set baudrate to 9600
+            self.dev.baudrate = 9600
+        else:
+            # TODO: try to replicate UART key sequence using separate power signal
+            # and clever data
+
+            # Set baudrate to 9600
+            self.dev.baudrate = 9600
 
 ###############################################################################################################
 
@@ -452,3 +492,77 @@ class JL_LoaderV2(JL_MSCProtocolBase):
         resp = self.cmd_exec(JL_LoaderV2.Cmd.GET_MASKROM_ID, b'')
         return int.from_bytes(resp[:4], 'big')
 
+
+class JL_UARTDevice:
+    """
+    Common base for UART protocols
+    """
+
+    def __init__(self, dev: Serial, is_jl_tool, single_wire=True):
+        self.dev = dev
+        self.single_wire = single_wire
+        self.is_jl_tool = is_jl_tool
+
+    def read(self, size=1):
+        if self.is_jl_tool and self.dev.timeout is not None and self.dev.in_waiting < size:
+            # The USB download tool driver appears to behave oddly and never
+            # waits for timeout, so try to implement it in Python instead of
+            # relying on the OS to do it
+            target_time = time.time() + self.dev.timeout
+            prev_in_waiting = self.dev.in_waiting
+            while time.time() < target_time:
+                curr_in_waiting = self.dev.in_waiting
+                if prev_in_waiting != curr_in_waiting:
+                    # Reset timer if data is coming in
+                    target_time = time.time() + self.dev.timeout
+                    prev_in_waiting = curr_in_waiting
+                    
+                time.sleep(0.01)
+            
+        return self.dev.read(size)
+    
+    def write(self, b):
+        return self.dev.write(b)
+
+
+class JL_UARTBOOT(JL_UARTDevice):
+    """
+    JL UART initial loader protocol implementation
+    """
+
+    def send_loader(self, blob, load_addr, opt, rate, res=0, check_response=True):
+        """Send loader binary"""
+        # Create request
+        # Magic bytes and blob-related fields
+        blob_crc = jl_crc16(blob)
+        req = struct.pack('<5sIIH', b'\x00\x55\xaa\x10\x20', load_addr, len(blob),
+                          blob_crc)
+        # Add CRC of blob-related fields and initial loader options
+        req_crc = jl_crc16(req[5:])
+        req += struct.pack('<HBBB', req_crc, opt, rate, res)
+        # Add CRC of everything
+        req += bytes([jl_crc8(req)])
+
+        self.dev.read_all()
+        self.write(req)
+        if not self.single_wire:
+            self.read(len(req))
+        
+        resp = self.read(5)
+        if resp != b'\x55\xaa\x01\x20\x22':
+            return False
+        
+        # Switching baud rate here
+        time.sleep(0.025)
+        self.dev.baudrate = rate * 10000
+
+        self.write(blob)
+        if not self.single_wire:
+            self.read(len(blob))
+        
+        if check_response:
+            resp = self.read(5)
+            if resp != b'\x55\xaa\x01\x20\x22':
+                return False
+            
+        return True

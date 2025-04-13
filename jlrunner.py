@@ -44,6 +44,9 @@ else:
     device = choose_jl_device()
     if device is None:
         exit(1)
+    if device['type'] != 'usb':
+        print('Non-USB interfaces not currently supported.')
+        exit(1)
 
 
 with JL_MSCDevice(device) as dev:
