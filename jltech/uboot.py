@@ -2,9 +2,8 @@ from scsiio import SCSIDev
 from scsiio.common import SCSIException
 from jltech.crc import jl_crc8, jl_crc16
 from jltech.cipher import jl_crc_cipher, cipher_bytes
-import os, time
+import os, time, random, struct
 from serial import Serial
-import struct
 
 class JL_MSCDevice:
     """ Class for handling of the JieLi Mass Storage devices """
@@ -96,10 +95,10 @@ class SerialDevice:
         self.path = info['path']
         self.is_download_tool = info['name'] and ('JLVirtualJtagSerial' in info['name']) # maybe Windows-only for now
         self.open()
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, *args, **kwargs):
         self.close()
 
@@ -108,7 +107,7 @@ class SerialDevice:
     def open(self):
         # baud is sane default that won't cause USB download tool to issue UART key
         self.dev = Serial(self.path, 115200, timeout=1.0)
-        
+
     def close(self):
         self.dev.close()
 
@@ -173,6 +172,9 @@ class JL_MSCProtocolBase:
         """ Execute command - data out (send to device) """
         self.dev.execute(self.cmd_prepare_cdb(cmd, args), data, None)
 
+    @property
+    def supports_memory_commands(self):
+        return True
 
 
 class JL_LoaderV1(JL_MSCProtocolBase):
@@ -503,7 +505,7 @@ class JL_UARTDevice:
         self.single_wire = single_wire
         self.is_jl_tool = is_jl_tool
 
-    def read(self, size=1):
+    def _read_impl(self, size):
         if self.is_jl_tool and self.dev.timeout is not None and self.dev.in_waiting < size:
             # The USB download tool driver appears to behave oddly and never
             # waits for timeout, so try to implement it in Python instead of
@@ -516,13 +518,19 @@ class JL_UARTDevice:
                     # Reset timer if data is coming in
                     target_time = time.time() + self.dev.timeout
                     prev_in_waiting = curr_in_waiting
-                    
+
                 time.sleep(0.01)
-            
+
         return self.dev.read(size)
-    
+
+    def read(self, size=1):
+        return self._read_impl(size)
+
     def write(self, b):
-        return self.dev.write(b)
+        result = self.dev.write(b)
+        if not self.single_wire:
+            self._read_impl(len(b))
+        return result
 
 
 class JL_UARTBOOT(JL_UARTDevice):
@@ -543,26 +551,324 @@ class JL_UARTBOOT(JL_UARTDevice):
         # Add CRC of everything
         req += bytes([jl_crc8(req)])
 
+        # Send request
         self.dev.read_all()
         self.write(req)
-        if not self.single_wire:
-            self.read(len(req))
-        
         resp = self.read(5)
         if resp != b'\x55\xaa\x01\x20\x22':
             return False
-        
+
         # Switching baud rate here
         time.sleep(0.025)
         self.dev.baudrate = rate * 10000
 
+        # Send payload
         self.write(blob)
-        if not self.single_wire:
-            self.read(len(blob))
-        
         if check_response:
             resp = self.read(5)
             if resp != b'\x55\xaa\x01\x20\x22':
                 return False
-            
+
         return True
+
+class JL_UARTLoader(JL_UARTDevice):
+    """
+    Loader class implementation for UART protocol.
+    """
+
+    #
+    # Commands
+    #
+    class Cmd:
+        INITIALIZE_FLASH            = 0xFC01
+        CHIP_RESET                  = 0xFC02
+        HANDSHAKE                   = 0xFC03
+        STH_FC04                    = 0xFC04
+        READ_CHIPID                 = 0xFC05
+        READ_UID                    = 0xFC06
+        STH_FC07                    = 0xFC07
+        WRITE_KEY                   = 0xFC08
+        READ_KEY                    = 0xFC09
+        WRITE_EFUSE                 = 0xFC0A
+        READ_EFUSE                  = 0xFC0B
+
+        FLASH_CHIP_ERASE            = 0xFC11
+        FLASH_BLOCK_ERASE           = 0xFC12
+        FLASH_SECTOR_ERASE          = 0xFC13
+        FLASH_PAGE_ERASE            = 0xFC14
+        FLASH_GET_BLOCK_ALIGN       = 0xFC15
+
+        FLASH_WRITE                 = 0xFC18
+        FLASH_READ                  = 0xFC19
+        FLASH_CHECKSUM_CHUNKS       = 0xFC1A
+        FLASH_CHECKSUM_REGION       = 0xFC1B
+        PIN_TEST                    = 0xFC1C
+
+        FLASH_DISABLE_QPP           = 0xFC20
+
+        STH_FC31                    = 0xFC31
+        STH_FC32                    = 0xFC32
+
+    MAX_CHUNK_LENGTH = 0x1000
+
+    #-------------------------------------------#
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cipher_key = 0
+        self.handshaked = False
+
+    def crypt_buffer(self, buf):
+        if self.handshaked:
+            return cipher_bytes(jl_crc_cipher, buf, key=self.cipher_key)
+        else:
+            return buf
+
+    def create_request(self, cmd, param_a=0, param_b=0, param_c=0, param_d=0, param_e=0, param_f=0):
+        buf = struct.pack('>HIIHHBB', cmd, param_a, param_b, param_c, param_d, param_e, param_f)
+        buf = jl_crc16(buf).to_bytes(2, 'big') + buf
+        buf = self.crypt_buffer(buf)
+        return buf
+
+    def read_response_ex(self, cmd, length=20):
+        data = self.read(length)
+        if len(data) != length:
+            raise ValueError('Could not read response from device.')
+        data = self.crypt_buffer(data)
+
+        marker, crc, resp_cmd, status = struct.unpack('>HHHH')
+        if marker != 0x00ff:
+            raise ValueError('Marker mismatch')
+        if crc != jl_crc16(data[4:]):
+            raise ValueError('CRC mismatch')
+        if resp_cmd != cmd:
+            raise ValueError('Command mismatch')
+        if status != 0:
+            if status == 0x0016:
+                raise ValueError('Request CRC check failed, or unknown command category')
+            elif status == 0x0026:
+                raise ValueError('Unknown command')
+            else:
+                raise ValueError('Received unknown status {}' % status)
+
+        return data
+
+    def read_response(self, cmd, length=20):
+        data = self.read_response_ex(cmd, length)
+        return data[8:]
+
+    def read_chunk(self, length, has_data=True):
+        read_len = 4
+        if has_data:
+            read_len += length
+        data = self.read(read_len)
+        if len(data) != read_len:
+            raise ValueError('Failed to read complete chunk')
+        data = self.crypt_buffer()
+
+        crc, crc_inverted = struct.unpack('>HH', data[0:4])
+        if crc != (crc_inverted ^ 0xffff):
+            raise ValueError('CRC does not match complement')
+
+        chunk = data[4:]
+        if length != 0 and crc != jl_crc16(chunk):
+            raise ValueError('CRC mismatch')
+
+        return crc, chunk
+
+    @property
+    def supports_memory_commands(self):
+        return False
+
+    #-------------------------------------------#
+
+    def initialize_flash(self, param=None):
+        """Initialize flash"""
+        if param is None:
+            param = b'\x00' * 12
+        else:
+            param = param.encode()
+
+        if len(param) != 12:
+            raise ValueError('External flash parameter is not 12 characters in length.')
+
+        pa, pb, pc, pd = struct.unpack('<IIHH', param.encode())
+        req = self.create_request(self.Cmd.INITIALIZE_FLASH, pa, pb, pc, pd)
+        self.write(req)
+        resp = self.read_response(self.Cmd.INITIALIZE_FLASH)
+        return struct.unpack('>HI', resp[0:6])
+
+    def online_device(self):
+        """ Get online device """
+        # Shim for shell
+        dev_type, dev_id = self.initialize_flash()
+        return {'type': dev_type, 'id': dev_id}
+
+    def chip_reset(self):
+        """Reset the chip"""
+        req = self.create_request(self.Cmd.CHIP_RESET)
+        self.write(req)
+        # No response
+
+    def run_app(self, _):
+        """ Run app (or reset) """
+        # Shim for shell
+        self.chip_reset()
+        raise Exception('Exit the shell')
+
+    def handshake(self):
+        """Perform handshake"""
+        rand = random.randbytes(14)
+        pa, pb, pc, pd, pe, pf = struct.unpack('<IIHHBB', rand)
+        req = self.create_request(self.Cmd.HANDSHAKE, pa, pb, pc, pd, pe, pf)
+        self.write(req)
+        resp = self.read_response_ex(self.Cmd.HANDSHAKE)
+
+        if self.handshaked:
+            crc_lo = ((self.cipher_key & 0xff) << 8) | ((self.cipher_key & 0xff00) >> 8)
+        else:
+            crc_lo = jl_crc16(req)
+        crc_hi = jl_crc16(resp)
+
+        self.cipher_key = ((crc_lo & 0xff) << 8) | ((crc_lo & 0xff00) >> 8) | \
+            ((crc_hi & 0xff) << 24) | ((crc_hi & 0xff00) << 8)
+        self.handshaked = True
+
+    def sth_fc04(self):
+        """Send command 0xFC04"""
+        req = self.create_request(self.Cmd.STH_FC04)
+        self.write(req)
+        resp = self.read_response(self.Cmd.STH_FC04)
+        return int.from_bytes(resp[0:4], 'big')
+
+    def read_chip_id(self):
+        """Read the microcontroller's chip ID"""
+        req = self.create_request(self.Cmd.READ_CHIPID)
+        self.write(req)
+        resp = self.read_response(self.Cmd.READ_CHIPID)
+        return int.from_bytes(resp[2:6], 'big')
+
+    def read_uid(self):
+        """Read the flash UID"""
+        req = self.create_request(self.Cmd.READ_UID)
+        self.write(req)
+        return self.read_response(self.Cmd.READ_UID, 24)
+
+    def write_chipkey(self, key):
+        """Write (chip)key"""
+        req = self.create_request(self.Cmd.WRITE_KEY)
+        self.write(req)
+        self.read_response(self.Cmd.WRITE_KEY)
+
+    def chip_key(self):
+        """Read (chip)key"""
+        req = self.create_request(self.Cmd.READ_KEY)
+        self.write(req)
+        resp = self.read_response(self.Cmd.READ_KEY)
+        return int.from_bytes(cipher_bytes(jl_crc_cipher, resp[0:1][::-1]), 'little')
+
+    def write_efuse(self, value, safety, index):
+        """Write value to eFuse"""
+        req = self.create_request(self.Cmd.WRITE_EFUSE, value, safety, index)
+        self.write(req)
+        resp = self.read_response(self.Cmd.WRITE_EFUSE)
+        return int.from_bytes(resp[0:4], 'big')
+
+    def read_efuse(self, index):
+        """Read value from eFuse"""
+        req = self.create_request(self.Cmd.READ_EFUSE, param_c=index)
+        self.write(req)
+        resp = self.read_response(self.Cmd.READ_EFUSE)
+        return int.from_bytes(resp[0:4], 'big')
+
+    def flash_erase_chip(self):
+        """Erase flash chip"""
+        req = self.create_request(self.Cmd.FLASH_CHIP_ERASE)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_CHIP_ERASE)
+
+    def flash_erase_block(self, addr):
+        """Erase flash block"""
+        req = self.create_request(self.Cmd.FLASH_BLOCK_ERASE, addr)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_BLOCK_ERASE)
+
+    def flash_erase_sector(self, addr):
+        """Erase flash sector"""
+        req = self.create_request(self.Cmd.FLASH_SECTOR_ERASE, addr)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_SECTOR_ERASE)
+
+    def flash_erase_page(self, addr):
+        """Erase flash page"""
+        req = self.create_request(self.Cmd.FLASH_PAGE_ERASE, addr)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_PAGE_ERASE)
+
+    def flash_get_block_align(self):
+        """Get block align"""
+        req = self.create_request(self.Cmd.FLASH_GET_BLOCK_ALIGN)
+        self.write(req)
+        resp = self.read_response(self.Cmd.FLASH_GET_BLOCK_ALIGN)
+        return int.from_bytes(resp[0:4], 'big')
+
+    def flash_write(self, addr, data):
+        """Write flash"""
+        if len(data) > self.MAX_CHUNK_LENGTH:
+            raise ValueError(f'Data length cannot be greater than {self.MAX_CHUNK_LENGTH} bytes')
+
+        data_crc = jl_crc16(data)
+        req = self.create_request(self.Cmd.FLASH_WRITE, addr, len(data), data_crc)
+        self.write(req + data)
+        self.read_response(self.Cmd.FLASH_WRITE)
+
+    def flash_read(self, addr, length):
+        """Read flash"""
+        req = self.create_request(self.Cmd.FLASH_READ, addr, length)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_READ)
+
+        data = bytearray()
+        while length > 0:
+            chunk_size = min(length, self.MAX_CHUNK_LENGTH)
+            _, chunk = self.read_chunk(chunk_size)
+            data.extend(chunk)
+            length -= chunk_size
+
+        return data
+
+    def flash_crc16_chunks(self, addr, length):
+        """Calculate flash CRC16 by chunks"""
+        req = self.create_request(self.Cmd.FLASH_CHECKSUM_CHUNKS, addr, length)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_CHECKSUM_CHUNKS)
+
+        crcs = []
+        while length > 0:
+            chunk_size = min(length, self.MAX_CHUNK_LENGTH)
+            crc, _ = self.read_chunk(chunk_size, False)
+            crcs.append(crc)
+            length -= chunk_size
+
+        return crcs
+
+    def flash_crc16(self, addr, length):
+        """Calculate flash CRC16"""
+        req = self.create_request(self.Cmd.FLASH_CHECKSUM_REGION, addr, length)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_CHECKSUM_REGION)
+        crc, _ = self.read_chunk(0, False)
+        return crc
+
+    def pin_test(self):
+        """Perform pin test"""
+        req = self.create_request(self.Cmd.PIN_TEST)
+        self.write(req)
+        resp = self.read_response(self.Cmd.PIN_TEST)
+        return int.from_bytes(resp[2:6], 'big')
+
+    def flash_disable_qpp(self):
+        """Disable quad page programming"""
+        req = self.create_request(self.Cmd.FLASH_DISABLE_QPP)
+        self.write(req)
+        self.read_response(self.Cmd.FLASH_DISABLE_QPP)

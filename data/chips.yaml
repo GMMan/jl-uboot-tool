@@ -163,9 +163,6 @@ sh55:
         - AD105N
     arch: pi32
 
-    uboot1.00:
-        protocol-version: v2
-
 uc03:
     name:
         - AD16N

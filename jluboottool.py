@@ -1,5 +1,6 @@
 from scsiio.common import SCSIException
-from jltech.uboot import JL_MSCDevice, SerialDevice, JL_UBOOT, JL_LoaderV2, JL_LoaderV1, JL_UARTBOOT
+from jltech.uboot import JL_MSCDevice, SerialDevice, JL_UBOOT, JL_LoaderV2, \
+    JL_LoaderV1, JL_UARTBOOT, JL_UARTLoader
 from jltech.cipher import cipher_bytes, jl_crc_cipher, jl_rxgp_cipher
 from jltech.utils import *
 from jltech.isdconfig import create_full_binary_ini
@@ -103,6 +104,12 @@ class DasShell(cmd.Cmd):
 
     def emptyline(self):
         pass
+
+    def check_supports_memory_commands(self):
+        support = self.dev.supports_memory_commands
+        if not support:
+            print('Memory commands not supported')
+        return support
 
     def do_exit(self, args):
         """Get out of the shell"""
@@ -433,6 +440,9 @@ class DasShell(cmd.Cmd):
         memread <address> <length> <file>
         """
 
+        if not self.check_supports_memory_commands():
+            return
+
         args = args.split(maxsplit=2)
 
         if len(args) < 3:
@@ -475,6 +485,9 @@ class DasShell(cmd.Cmd):
         """Write file to memory.
         memwrite <address> <file>
         """
+
+        if not self.check_supports_memory_commands():
+            return
 
         args = args.split(maxsplit=1)
 
@@ -519,6 +532,9 @@ class DasShell(cmd.Cmd):
         If <length> is not specified, then it will default to 256 bytes.
         """
 
+        if not self.check_supports_memory_commands():
+            return
+
         args = args.split(maxsplit=2)
 
         if len(args) < 1:
@@ -553,11 +569,14 @@ class DasShell(cmd.Cmd):
     def do_memjump(self, args):
         """Execute code at a given address
         memjump <addr> [<arg>]
-        
+
         [<arg>] specifies an 16-bit integer which is passed to the
         code in its loader parameters structure, if any is supported by the chip or its loader.
         If it is not specified, it defaults to 0
         """
+
+        if not self.check_supports_memory_commands():
+            return
 
         args = args.split(maxsplit=2)
 
@@ -759,14 +778,14 @@ with devicetype(devinfo) as dev:
         address = spec['address']
         spl_opt = spec.get('options', 0)  # Does not include encryption flag!
         cipher = spec.get('encryption', 'none')
-        
+
         if cipher == 'MengLi':
             spl_opt |= 0x02
-        
+
         # Prepare payload
         with open(dataroot / spec['file'], 'rb') as f:
             loader_blob = f.read()
-        
+
         # TODO: load actual isd_config.ini
         loader_blob += create_full_binary_ini()
 
@@ -775,14 +794,16 @@ with devicetype(devinfo) as dev:
 
         # Send payload
         loader = JL_UARTBOOT(dev.dev, is_jl_tool=dev.is_download_tool, single_wire=dev.is_download_tool)
+        print(f'Running loader.')
         if loader.send_loader(loader_blob, address, spl_opt, args.baud):
             print('The Loader has been successfully installed.')
         else:
             print("!! Failed to run the loader !!")
             exit(3)
 
-        # Replace loader with second stage
-        exit(0)  # TODO
+        # Replace loader with second stage and handshake
+        loader = JL_UARTLoader(dev.dev, is_jl_tool=dev.is_download_tool, single_wire=dev.is_download_tool)
+        loader.handshake()
 
     #
     # Print some quick info summary
