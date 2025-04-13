@@ -38,7 +38,7 @@ ap.add_argument('--loader-arg', type=anyint, metavar='ARG',
                 help="(USB-only) Loader's argument (overrides one set with the '--arg-xxx' arguments above)."
                      " '--arg-target' defines bits 0-3, '--arg-clkdiv' defines bits 4-11 and '--arg-spimode' defines bits 12-13.")
 
-ap.add_argument('--baud', type=int, metavar='VA:', default=100,
+ap.add_argument('--baud', type=int, metavar='VAL', default=100,
                 help='(UART-only) UART baud rate multipler; baud rate is value times 10000; default is %(default)d')
 
 ap.add_argument('cmds', nargs='*',

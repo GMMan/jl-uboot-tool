@@ -106,7 +106,7 @@ class SerialDevice:
 
     def open(self):
         # baud is sane default that won't cause USB download tool to issue UART key
-        self.dev = Serial(self.path, 115200, timeout=1.0)
+        self.dev = Serial(self.path, 115200, timeout=5.0)
 
     def close(self):
         self.dev.close()
@@ -630,14 +630,14 @@ class JL_UARTLoader(JL_UARTDevice):
         buf = self.crypt_buffer(buf)
         return buf
 
-    def read_response_ex(self, cmd, length=20):
+    def read_response_ex(self, cmd, length=20, ignore_marker=False):
         data = self.read(length)
         if len(data) != length:
             raise ValueError('Could not read response from device.')
         data = self.crypt_buffer(data)
 
-        marker, crc, resp_cmd, status = struct.unpack('>HHHH')
-        if marker != 0x00ff:
+        marker, crc, resp_cmd, status = struct.unpack('>HHHH', data[0:8])
+        if not ignore_marker and marker != 0x00ff:
             raise ValueError('Marker mismatch')
         if crc != jl_crc16(data[4:]):
             raise ValueError('CRC mismatch')
@@ -664,7 +664,7 @@ class JL_UARTLoader(JL_UARTDevice):
         data = self.read(read_len)
         if len(data) != read_len:
             raise ValueError('Failed to read complete chunk')
-        data = self.crypt_buffer()
+        data = self.crypt_buffer(data)
 
         crc, crc_inverted = struct.unpack('>HH', data[0:4])
         if crc != (crc_inverted ^ 0xffff):
@@ -692,7 +692,7 @@ class JL_UARTLoader(JL_UARTDevice):
         if len(param) != 12:
             raise ValueError('External flash parameter is not 12 characters in length.')
 
-        pa, pb, pc, pd = struct.unpack('<IIHH', param.encode())
+        pa, pb, pc, pd = struct.unpack('<IIHH', param)
         req = self.create_request(self.Cmd.INITIALIZE_FLASH, pa, pb, pc, pd)
         self.write(req)
         resp = self.read_response(self.Cmd.INITIALIZE_FLASH)
@@ -722,7 +722,7 @@ class JL_UARTLoader(JL_UARTDevice):
         pa, pb, pc, pd, pe, pf = struct.unpack('<IIHHBB', rand)
         req = self.create_request(self.Cmd.HANDSHAKE, pa, pb, pc, pd, pe, pf)
         self.write(req)
-        resp = self.read_response_ex(self.Cmd.HANDSHAKE)
+        resp = self.read_response_ex(self.Cmd.HANDSHAKE, ignore_marker=True)
 
         if self.handshaked:
             crc_lo = ((self.cipher_key & 0xff) << 8) | ((self.cipher_key & 0xff00) >> 8)

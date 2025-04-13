@@ -254,6 +254,9 @@ enables encryption on future requests and responses.
 |-- -- -- -- -- -- -- -- -- -- -- --
 ```
 
+**Note:** the starting fixed bytes of the raw response for this command is not
+set to a fixed value and is random.
+
 ### `0x04`: Unknown
 
 Does not seem to do anything, but does return a fixed result. Perhaps returns
