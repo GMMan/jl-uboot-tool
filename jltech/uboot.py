@@ -714,7 +714,7 @@ class JL_UARTLoader(JL_UARTDevice):
         """ Run app (or reset) """
         # Shim for shell
         self.chip_reset()
-        raise Exception('Exit the shell')
+        raise Exception('Sent chip reset command')
 
     def handshake(self):
         """Perform handshake"""
@@ -765,7 +765,7 @@ class JL_UARTLoader(JL_UARTDevice):
         req = self.create_request(self.Cmd.READ_KEY)
         self.write(req)
         resp = self.read_response(self.Cmd.READ_KEY)
-        return int.from_bytes(cipher_bytes(jl_crc_cipher, resp[0:1][::-1]), 'little')
+        return int.from_bytes(cipher_bytes(jl_crc_cipher, resp[0:2][::-1]), 'little')
 
     def write_efuse(self, value, safety, index):
         """Write value to eFuse"""
