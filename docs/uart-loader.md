@@ -176,6 +176,33 @@ loader will update the upper 16 bits of the key as previously mentioned.
 For requests, the additional payload is unencrypted. For responses, additional
 chunks are encrypted.
 
+## List of commands
+
+* [`0x01`: Initialize SPI NOR flash](#0x01-initialize-spi-nor-flash)
+* [`0x02`: Chip reset](#0x02-chip-reset)
+* [`0x03`: Handshake](#0x03-handshake)
+* [`0x04`: Unknown](#0x04-unknown)
+* [`0x05`: Read chip ID](#0x05-read-chip-id)
+* [`0x06`: Read flash unique ID](#0x06-read-flash-unique-id)
+* [`0x07`: Not implemented](#0x07-not-implemented)
+* [`0x08`: Write chipkey](#0x08-write-chipkey)
+* [`0x09`: Read chipkey](#0x09-read-chipkey)
+* [`0x0a`: Write eFuse](#0x0a-write-efuse)
+* [`0x0b`: Read eFuse](#0x0b-read-efuse)
+* [`0x11`: Flash chip erase](#0x11-flash-chip-erase)
+* [`0x12`: Flash block erase](#0x12-flash-block-erase)
+* [`0x13`: Flash sector erase](#0x13-flash-sector-erase)
+* [`0x14`: Flash page erase](#0x14-flash-page-erase)
+* [`0x15`: Flash get block align](#0x15-flash-get-block-align)
+* [`0x18`: Flash write](#0x18-flash-write)
+* [`0x19`: Flash read](#0x19-flash-read)
+* [`0x1a`: Flash checksum by chunk](#0x1a-flash-checksum-by-chunk)
+* [`0x1b`: Flash checksum whole region](#0x1b-flash-checksum-whole-region)
+* [`0x1c`: Pin test](#0x1c-pin-test)
+* [`0x20`: Disable quad page programming](#0x20-disable-quad-page-programming)
+* [`0x31`: Not implemented](#0x31-not-implemented)
+* [`0x32`: Not implemented](#0x32-not-implemented)
+
 ## Commands
 
 ### `0x01`: Initialize SPI NOR flash
