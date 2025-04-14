@@ -49,7 +49,8 @@ def create_binary_from_ini(path, section_name='SYS_CFG_PARAM'):
             else:
                 binary.extend(v.encode())
 
-    binary.append(0)  # value length of 0 or > 32 will stop parsing
+    # value length of 0 or > 32 will stop parsing, although isd_download.exe doesn't add this
+    binary.append(0)
     return bytes(binary)
 
 def create_full_binary_ini(chipkey_blob=b'\x00' * 32, ini_blob=b'\x00'):

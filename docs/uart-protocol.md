@@ -1,48 +1,64 @@
 # UART protocol
 
-The UART is initialized to 9600 baud, typically on the PB5 port which is shared with the LDO_IN line,
-which seeminly allows to e.g. flash the earbuds from the charging case or something like that..
+After the bootrom enters UART boot mode either by entry using the UART key,
+having no valid app to boot, or requested by the application, it will listen for
+a command to download the UART loader at 9600 baud.
 
-sync string: `55 AA 01 20 22 75 61 72 74` (never sent??)
+## Download loader command
 
-loader reception process:
-
-```
-on <uart_isr>
- 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15
- 55 AA -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-
-on <uart_cmd_verify>
- 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15
- -- -- -- -- -- DD-DD-DD-DD-DD-DD-DD-DD-DD-DD cc-CC -- -- -- -- --
-
-DD... = data
-cc-CC = CRC16 of data
-
-on <uart_recv_loader>
- 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15
- -- -- -- -- -- aa-aa-aa-AA ll-ll-ll-LL cc-CC -- -- GG RR -- -- --
-
-aa-aa-aa-AA = load&execute address
-ll-ll-ll-LL = data length
-cc-CC = CRC16 of data
-GG = flags [b1 = encrypted data]
-RR = uart baudrate on data reception (in 10000 baud units, if 0 defaults to 10 -> 100000 baud,
-                                      and so the baudrate has to be in multiples of 10k baud)
-
-* the called loader receives a pointer to the received command as an argument (in r0 register)
-```
+The download loader command is the only command accepted in this state, and has
+the following structure:
 
 ```
- 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15
- 55 AA -- -- -- aa:aa:aa:AA ll:ll:ll:LL cc:CC rr:RR GG TT -- -- -- 
- 
- aa:aa:aa:AA = load&execute address
- ll:ll:ll:LL = data length
- cc:CC = CRC16 of data
- rr:RR = CRC16 of the previous 10 bytes (addr/len/crc)
- GG = Flags (b1 = decrypt data with MengLi/CrcDecode algo)
- TT = baudrate (in 10000 baud steps, if 0 then it defaults to 10 => 100000 baud)
- 
+00:55:aa:10:20 aa:aa:aa:AA ll:ll:ll:LL pp:PP mm:MM OO BB RR WW
 ```
 
+* `00:55:aa:10:20`: fixed magic bytes; specifically, only the `55:aa` must be
+  present and at the same position, as the bootrom verifies this and uses it
+  to locate the position of the message in the DMA read buffer if DMA is in use.
+  The other bytes can be any value.
+* `aa:aa:aa:AA`: the address to load the payload to
+* `ll:ll:ll:LL`: the length of the payload
+* `pp:PP`: CRC16 of the payload
+* `mm:MM`: CRC16 of all data after the fixed bytes and before this field, i.e.
+  address, payload length, and payload CRC
+* `OO`: loader option byte; bootrom will check bit 1 (`0x02`). If set, it will
+  decrypt the payload after reception using `CrcDecode`
+* `BB`: baud rate used for subsequent communication. It is multiplied by 10000,
+  i.e. if `10` is specified, the baud rate will be 100000. This is used when
+  sending the payload, along with any communications from the loader. If `0` is
+  specified, the bootrom will automatically replace it with `10`.
+* `RR`: reserved value, unused
+* `WW`: CRC8 of all bytes before the current field; not checked by bootrom
+
+All fields are in little-endian, which is different from the byte order that the
+loader uses.
+
+After the bootrom receives and validates the message, it responds with the bytes
+`55:aa:01:20:22`.
+
+## Payload sending
+
+After receiving response from the device, switch to the baud rate that was
+specified in the command and send the loader payload. When the loader has been
+received, its checksum will be verified, and the data decrypted if required. Note
+that the checksum is verified before decryption, not after. Finally, the bootrom
+jumps to the start of the payload in RAM.
+
+## Loader considerations
+
+These points are specific to the loader, and are not handled by the bootrom.
+
+You can attach parameters in the form of the `isd_config.ini` binary found
+inside firmware images. It consists of a 32-byte chipkey blob, CRC16 of the
+chipkey, and a list of binary-serialized key-value pairs. The extra data can
+be up to 1024 bytes in length, depending on the available RAM on the chip. The
+data is expected to be encrypted at the time the loader runs, so if encryption
+of the loader payload is indicated, the appended data should not be encrypted,
+because the bootrom will try to decrypt it after reception, and cause the data
+to become encrypted in memory, as desired.
+
+After the loader has initialized, it will respond with the same `55:aa:01:20:22`
+but at the current baud rate. This indicates the loader is ready to receive
+commands. For information on the loader protocol, see the
+[UART loader protocol](uart-loader.md) document.

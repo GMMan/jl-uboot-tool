@@ -123,6 +123,9 @@ Request parameters are generally packed within the request itself, aside from
 certain commands like flash write, which may send its payload appended
 (unencrypted) to the original request, which can be `0x1000` bytes at most.
 
+Parameter F appears to be a random byte or some sort of sequence number. The
+loader does not check it against anything.
+
 ### Response format
 
 Each response is a fixed 20-byte message (with a few exceptions), in this

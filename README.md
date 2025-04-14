@@ -66,7 +66,7 @@ Chip series it's currently aware of are listed below:
 | DV15   | AC521N                | Working       |                    |
 | DV16   | AC540N/AC560N         | unknown       |                    |
 | SH54   | AD14N/AD104N          | unknown       |                    |
-| SH55   | AD15N/AD105N          | n/a           | UART loader only   |
+| SH55   | AD15N/AD105N          | Working       | UART only, suggest using official USB downloader |
 | UC03   | AD16N                 | unknown       | loader was in some weird format |
 | BD19   | AC632N                | unknown       |                    |
 | BD29   | AC630N                | unknown       |                    |
@@ -88,3 +88,5 @@ Chip series it's currently aware of are listed below:
 - [What is UBOOT](docs/what-is-uboot.md)
 - [How to enter UBOOT mode](docs/how-to-enter-uboot.md)
 - [USB protocol](docs/usb-protocol.md)
+- [UART loader downloading protocol](docs/uart-protocol.md)
+- [UART loader protocol](docs/uart-loader.md)

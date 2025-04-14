@@ -49,6 +49,30 @@ There's another way of entering the download mode, which is present on fairly re
 This method uses the ISP protocol to upload a special payload into the chip, which can either simply setup some bits and enter the Boot ROM directly,
 or do something like initializing a precise-ish LRC oscillator for chips where there's no option for a crystal oscillator, like in AC608N series that are BR25 (AC696N) but they lack Bluetooth, and consequently, the BT_OSC oscillator inputs.
 
+### UART_KEY
+
+For chips without a USB port (e.g. SH55 family), you can send a sequence upon power up over the boot-time UART pin to enter the UART equivalent of UBOOT. The key requires sending the value 0x68af (0110 1000 1010 1111) using 80/20% pulse width encoding.
+
+#### Connection
+Connect your UART key generator to the chip's upgrade UART pin. For chips introduced before AC697x, connect to pin PB5. For AC697x and after, connect to the LDOIN pin. For AD155N, it is pin PB9.
+
+#### Encoding scheme
+The encoding scheme requires that for each bit consisting of 5 equal periods, a 1 bit is expressed as 4 logic high periods followed by 1 logic low period, and a 0 bit is 1 logic high period followed by 4 logic low periods, with no pauses in between bits. The high or low period can drift between 3 to 5 periods, however the time it takes to send each bit
+cannot deviate more than 10% from the average of all bits sent, otherwise the decoder will reset and discard the current bit. Bits must take between 100us and 1600us to send. When the decoder resets, it will read one encoded bit to establish timing.
+
+#### Bootrom behavior
+On power up, the bootrom will set the UART pin as input with pull-down and begin UART key detection. When the key is detected, it will output high on the UART pin for around 2ms, then wait for the host to send the loader. The bootrom has a timeout that resets every time a valid bit is received, up to 100 bits.
+
+#### Signal example
+```
+Data  | ----_-____----_----_-____----_-____-____-____----_-____----_-____----_----_----_----_----------
+Clock | ***********************************************************************************************
+        \___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\___/\_________
+Start bit-|    0    1    1    0    1    0    0    0    1    0    1    0    1    1    1    1   Acknowledgement
+```
+
+In practice, as sent by the JL USB Updater tool, the period is 100us, for 500us per bit. The start bit is omitted, instead the UART key is sent repeatedly with no pauses between each transmission until the target chip pulls the UART line high (which usually happens after sending the key twice).
+
 ## Having troubles on booting
 
 The chip can automatically enter the USB download mode if it couldn't boot off the main flash.
