@@ -62,3 +62,9 @@ After the loader has initialized, it will respond with the same `55:aa:01:20:22`
 but at the current baud rate. This indicates the loader is ready to receive
 commands. For information on the loader protocol, see the
 [UART loader protocol](uart-loader.md) document.
+
+## Uncalibrated chips
+
+For brand new chips that do not have an external oscillator attached, there may
+be clock jitters that cause UART errors on read and write. These chips will need
+to be calibrated first on a 1-to-2 mass programmer to ensure clock stability.
