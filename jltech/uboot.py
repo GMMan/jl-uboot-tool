@@ -756,9 +756,10 @@ class JL_UARTLoader(JL_UARTDevice):
 
     def write_chipkey(self, key):
         """Write (chip)key"""
-        req = self.create_request(self.Cmd.WRITE_KEY)
+        req = self.create_request(self.Cmd.WRITE_KEY, key)
         self.write(req)
         self.read_response(self.Cmd.WRITE_KEY)
+        return 0
 
     def chip_key(self):
         """Read (chip)key"""
